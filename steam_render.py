@@ -6,6 +6,7 @@ import html
 import io
 import mimetypes
 import os
+import platform
 import shutil
 import sys
 import time
@@ -54,10 +55,14 @@ _HTML_RENDER_PAGE_TIMEOUT_SEC = max(2, _env_int("STEAM_HTML_RENDER_PAGE_TIMEOUT"
 _PLAYWRIGHT_INSTALL_TIMEOUT_SEC = max(
     60, _env_int("STEAM_PLAYWRIGHT_INSTALL_TIMEOUT", 600)
 )
+_PLAYWRIGHT_INSTALL_DEPS_TIMEOUT_SEC = max(
+    60, _env_int("STEAM_PLAYWRIGHT_INSTALL_DEPS_TIMEOUT", 600)
+)
 
 _PLAYWRIGHT_INSTALL_LOCK = asyncio.Lock()
 _PLAYWRIGHT_INSTALL_DONE = False
 _PLAYWRIGHT_PREPARE_TASK: asyncio.Task[Any] | None = None
+_PLAYWRIGHT_PREPARING_SKIP_LOGGED = False
 _JINJA_ENV: JinjaEnvironment | None = None
 
 
@@ -87,13 +92,19 @@ class _PlaywrightRuntime:
 _PLAYWRIGHT_RUNTIME = _PlaywrightRuntime()
 
 
-async def _run_playwright_cli(args: list[str], *, timeout_sec: int) -> tuple[int, str]:
+async def _run_playwright_cli(
+    args: list[str], *, timeout_sec: int, env: dict[str, str] | None = None
+) -> tuple[int, str]:
     cmd = [sys.executable, "-m", "playwright", *args]
+    proc_env = os.environ.copy()
+    if env:
+        proc_env.update(env)
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            env=proc_env,
         )
     except Exception as exc:
         return 1, f"spawn failed: {exc!s}"
@@ -131,10 +142,55 @@ async def ensure_playwright_runtime_ready(*, browser: str = "chromium") -> None:
         if target_browser not in {"chromium", "firefox", "webkit"}:
             target_browser = "chromium"
 
-        rc, output = await _run_playwright_cli(
-            ["install", target_browser],
-            timeout_sec=_PLAYWRIGHT_INSTALL_TIMEOUT_SEC,
+        rc_deps, output_deps = await _run_playwright_cli(
+            ["install-deps", target_browser],
+            timeout_sec=_PLAYWRIGHT_INSTALL_DEPS_TIMEOUT_SEC,
         )
+        if rc_deps != 0:
+            logger.warning(
+                "playwright install-deps failed/skipped "
+                f"(code={rc_deps}, browser={target_browser}): {output_deps[-300:]}"
+            )
+        else:
+            logger.info(f"playwright install-deps success: {target_browser}")
+
+        install_attempts: list[dict[str, str] | None] = [None]
+        if platform.system().lower() == "linux" and not os.environ.get(
+            "PLAYWRIGHT_DOWNLOAD_HOST"
+        ):
+            install_attempts.insert(
+                0,
+                {
+                    "PLAYWRIGHT_DOWNLOAD_HOST": "https://cdn.npmmirror.com/binaries/playwright",
+                    "PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST": "https://cdn.npmmirror.com/binaries/chrome-for-testing",
+                },
+            )
+            install_attempts.insert(
+                1,
+                {
+                    "PLAYWRIGHT_DOWNLOAD_HOST": "https://npmmirror.com/mirrors/playwright",
+                    "PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST": "https://cdn.npmmirror.com/binaries/chrome-for-testing",
+                },
+            )
+
+        rc = 1
+        output = ""
+        for idx, install_env in enumerate(install_attempts, start=1):
+            if install_env:
+                logger.info(
+                    f"playwright install attempt#{idx} with mirror host: {install_env.get('PLAYWRIGHT_DOWNLOAD_HOST', '')}"
+                )
+            else:
+                logger.info(f"playwright install attempt#{idx} with default host")
+
+            rc, output = await _run_playwright_cli(
+                ["install", target_browser],
+                timeout_sec=_PLAYWRIGHT_INSTALL_TIMEOUT_SEC,
+                env=install_env,
+            )
+            if rc == 0:
+                break
+
         if rc != 0:
             logger.warning(
                 "playwright install failed "
@@ -147,18 +203,29 @@ async def ensure_playwright_runtime_ready(*, browser: str = "chromium") -> None:
 
 
 def start_playwright_runtime_prepare(*, browser: str = "chromium") -> None:
-    global _PLAYWRIGHT_PREPARE_TASK
+    global \
+        _PLAYWRIGHT_INSTALL_DONE, \
+        _PLAYWRIGHT_PREPARE_TASK, \
+        _PLAYWRIGHT_PREPARING_SKIP_LOGGED
 
     if _PLAYWRIGHT_PREPARE_TASK is not None and not _PLAYWRIGHT_PREPARE_TASK.done():
         return
 
-    if _find_browser_executable():
+    local_browser = _find_browser_executable()
+    if local_browser:
+        _PLAYWRIGHT_INSTALL_DONE = True
+        logger.info(
+            f"local browser found on startup, skip playwright install: {local_browser}"
+        )
         return
 
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return
+
+    _PLAYWRIGHT_PREPARING_SKIP_LOGGED = False
+    logger.info("local browser missing on startup, preparing playwright in background")
 
     async def _runner() -> None:
         try:
@@ -167,6 +234,10 @@ def start_playwright_runtime_prepare(*, browser: str = "chromium") -> None:
             logger.warning(f"playwright background prepare failed: {exc!s}")
 
     _PLAYWRIGHT_PREPARE_TASK = loop.create_task(_runner())
+
+
+def is_playwright_runtime_preparing() -> bool:
+    return _PLAYWRIGHT_PREPARE_TASK is not None and not _PLAYWRIGHT_PREPARE_TASK.done()
 
 
 def _find_browser_executable() -> str | None:
@@ -284,23 +355,23 @@ def _state_color(state: str) -> str:
 
 
 def _template_dir() -> Path:
-        return Path(__file__).resolve().parent / "assets" / "template"
+    return Path(__file__).resolve().parent / "assets" / "template"
 
 
 def _get_jinja_env() -> JinjaEnvironment:
-        global _JINJA_ENV
+    global _JINJA_ENV
 
-        if _JINJA_ENV is not None:
-                return _JINJA_ENV
-
-        if Environment is None or FileSystemLoader is None or select_autoescape is None:
-                raise RuntimeError("jinja2 is not installed")
-
-        _JINJA_ENV = Environment(
-                loader=FileSystemLoader(str(_template_dir())),
-                autoescape=select_autoescape(enabled_extensions=("html", "xml"), default=True),
-        )
+    if _JINJA_ENV is not None:
         return _JINJA_ENV
+
+    if Environment is None or FileSystemLoader is None or select_autoescape is None:
+        raise RuntimeError("jinja2 is not installed")
+
+    _JINJA_ENV = Environment(
+        loader=FileSystemLoader(str(_template_dir())),
+        autoescape=select_autoescape(enabled_extensions=("html", "xml"), default=True),
+    )
+    return _JINJA_ENV
 
 
 def _render_template(template_name: str, values: dict[str, object]) -> str:
@@ -499,7 +570,14 @@ def _build_itad_price_history_html(
         x_ratio = min(1.0, max(0.0, x_ratio))
         x = chart_w * x_ratio
         y = chart_h * (1.0 - ((float(row["amount"]) - y_min) / rng))
-        chart_points.append({"x": round(x, 2), "y": round(y, 2), "amount": row["amount"], "ts": row["ts"]})
+        chart_points.append(
+            {
+                "x": round(x, 2),
+                "y": round(y, 2),
+                "amount": row["amount"],
+                "ts": row["ts"],
+            }
+        )
 
     polyline = " ".join(f"{p['x']},{p['y']}" for p in chart_points)
     y_ticks = [
@@ -516,7 +594,10 @@ def _build_itad_price_history_html(
     lowest_time = time.strftime("%Y-%m-%d %H:%M", time.localtime(int(lowest["ts"])))
     lowest_marker = None
     for p in chart_points:
-        if int(p["ts"]) == int(lowest["ts"]) and abs(float(p["amount"]) - float(lowest["amount"])) < 1e-9:
+        if (
+            int(p["ts"]) == int(lowest["ts"])
+            and abs(float(p["amount"]) - float(lowest["amount"])) < 1e-9
+        ):
             lowest_marker = p
             break
 
@@ -630,9 +711,19 @@ async def _render_html_to_png_file(
     prefix: str,
     min_height: int,
 ) -> str | None:
+    global _PLAYWRIGHT_PREPARING_SKIP_LOGGED
+
     temp_dir = Path(get_astrbot_temp_path())
     temp_dir.mkdir(parents=True, exist_ok=True)
     out_path = temp_dir / f"{prefix}_{uuid.uuid4().hex}.png"
+
+    if is_playwright_runtime_preparing():
+        if not _PLAYWRIGHT_PREPARING_SKIP_LOGGED:
+            logger.info(
+                "playwright preparing in progress; skip browser render this round"
+            )
+            _PLAYWRIGHT_PREPARING_SKIP_LOGGED = True
+        return None
 
     runtime = await _PLAYWRIGHT_RUNTIME.get()
     if runtime is None:
