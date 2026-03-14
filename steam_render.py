@@ -451,12 +451,18 @@ def _build_itad_price_history_html(
                 "point_count": 0,
                 "latest_price": "-",
                 "lowest_price": "-",
+                "lowest_time": "-",
                 "highest_price": "-",
                 "start_date": "-",
                 "end_date": "-",
                 "chart_points": "",
                 "chart_polyline": "",
+                "chart_w": 760,
+                "chart_h": 240,
+                "view_w": 900,
+                "view_h": 300,
                 "y_ticks": [],
+                "lowest_marker": None,
                 "rows": [],
                 "generated_at": _escape_text(
                     time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
@@ -468,10 +474,19 @@ def _build_itad_price_history_html(
     values = [float(x["amount"]) for x in norm_points]
     min_v = min(values)
     max_v = max(values)
-    rng = max(max_v - min_v, 1e-6)
+    raw_rng = max_v - min_v
+    if raw_rng < 1e-6:
+        pad = max(abs(max_v) * 0.05, 1.0)
+    else:
+        pad = max(raw_rng * 0.1, 0.01)
+    y_min = min_v - pad
+    y_max = max_v + pad
+    rng = max(y_max - y_min, 1e-6)
 
-    chart_w = 820.0
-    chart_h = 280.0
+    chart_w = 760.0
+    chart_h = 240.0
+    view_w = 900
+    view_h = 300
     n = len(norm_points)
     latest_ts = max(int(norm_points[-1]["ts"]), int(time.time()))
     window_start_ts = latest_ts - 365 * 24 * 3600
@@ -483,14 +498,28 @@ def _build_itad_price_history_html(
         x_ratio = (row_ts - window_start_ts) / ts_range
         x_ratio = min(1.0, max(0.0, x_ratio))
         x = chart_w * x_ratio
-        y = chart_h * (1.0 - ((float(row["amount"]) - min_v) / rng))
+        y = chart_h * (1.0 - ((float(row["amount"]) - y_min) / rng))
         chart_points.append({"x": round(x, 2), "y": round(y, 2), "amount": row["amount"], "ts": row["ts"]})
 
     polyline = " ".join(f"{p['x']},{p['y']}" for p in chart_points)
-    y_ticks = [round(max_v - (rng * i / 4), 2) for i in range(5)]
+    y_ticks = [
+        {
+            "value": round(y_max - (rng * i / 4), 2),
+            "y": round(chart_h * i / 4, 2),
+        }
+        for i in range(5)
+    ]
 
     latest = norm_points[-1]
     latest_price = float(latest["amount"])
+    lowest = min(norm_points, key=lambda r: (float(r["amount"]), int(r["ts"])))
+    lowest_time = time.strftime("%Y-%m-%d %H:%M", time.localtime(int(lowest["ts"])))
+    lowest_marker = None
+    for p in chart_points:
+        if int(p["ts"]) == int(lowest["ts"]) and abs(float(p["amount"]) - float(lowest["amount"])) < 1e-9:
+            lowest_marker = p
+            break
+
     rows = list(reversed(norm_points[-8:]))
     row_items = [
         {
@@ -512,6 +541,7 @@ def _build_itad_price_history_html(
             "point_count": n,
             "latest_price": f"{latest_price:.2f}",
             "lowest_price": f"{min_v:.2f}",
+            "lowest_time": _escape_text(lowest_time),
             "highest_price": f"{max_v:.2f}",
             "start_date": _escape_text(
                 time.strftime("%Y-%m-%d", time.localtime(int(norm_points[0]["ts"])))
@@ -521,7 +551,12 @@ def _build_itad_price_history_html(
             ),
             "chart_points": chart_points,
             "chart_polyline": polyline,
+            "chart_w": int(chart_w),
+            "chart_h": int(chart_h),
+            "view_w": int(view_w),
+            "view_h": int(view_h),
             "y_ticks": y_ticks,
+            "lowest_marker": lowest_marker,
             "rows": row_items,
             "generated_at": _escape_text(
                 time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
