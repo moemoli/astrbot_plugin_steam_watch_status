@@ -17,6 +17,12 @@
         "description": "IsThereAnyDeal API Key",
         "hint": "用于 /steam 价格 与特卖低价查询，请在 https://isthereanydeal.com/apps/my/ 获取"
     },
+    "http_proxy": {
+        "type": "string",
+        "default": "",
+        "description": "HTTP/HTTPS 代理（可选）",
+        "hint": "示例：http://127.0.0.1:7890。留空则不使用代理。"
+    },
     "poll_interval_sec": {
         "type": "string",
         "default": "60",

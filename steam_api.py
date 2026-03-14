@@ -24,14 +24,22 @@ class SteamApi:
         steam_web_api_key: str,
         steamgriddb_api_key: str,
         isthereanydeal_api_key: str = "",
+        http_proxy: str = "",
     ):
         self.steam_web_api_key = (steam_web_api_key or "").strip()
         self.steamgriddb_api_key = (steamgriddb_api_key or "").strip()
         self.isthereanydeal_api_key = (isthereanydeal_api_key or "").strip()
+        self.http_proxy = (http_proxy or "").strip()
         self.http: aiohttp.ClientSession | None = None
 
     def _http(self) -> aiohttp.ClientSession | None:
         return self.http
+
+    def _proxy(self) -> str | None:
+        proxy = str(self.http_proxy or "").strip()
+        if not proxy:
+            return None
+        return proxy
 
     async def resolve_steamid64(self, raw: str) -> str | None:
         text = self._normalize_target(raw)
@@ -84,7 +92,7 @@ class SteamApi:
         if not http:
             return None
         try:
-            async with http.get(url, allow_redirects=True) as resp:
+            async with http.get(url, allow_redirects=True, proxy=self._proxy()) as resp:
                 final_url = str(resp.url)
                 page_text = await resp.text(errors="ignore")
 
@@ -153,7 +161,7 @@ class SteamApi:
                 "key": self.steam_web_api_key,
                 "vanityurl": vanity,
             }
-            async with http.get(api, params=params) as resp:
+            async with http.get(api, params=params, proxy=self._proxy()) as resp:
                 if resp.status != 200:
                     return None
                 data = await resp.json(content_type=None)
@@ -184,7 +192,7 @@ class SteamApi:
                     "key": self.steam_web_api_key,
                     "steamids": ",".join(batch),
                 }
-                async with http.get(api, params=params) as resp:
+                async with http.get(api, params=params, proxy=self._proxy()) as resp:
                     if resp.status != 200:
                         continue
                     data = await resp.json(content_type=None)
@@ -231,7 +239,7 @@ class SteamApi:
                 "include_appinfo": 0,
                 "include_played_free_games": 1,
             }
-            async with http.get(api, params=params) as resp:
+            async with http.get(api, params=params, proxy=self._proxy()) as resp:
                 if resp.status != 200:
                     return "未知"
                 data = await resp.json(content_type=None)
@@ -281,7 +289,7 @@ class SteamApi:
                 "l": "schinese",
                 "cc": "cn",
             }
-            async with http.get(api, params=params) as resp:
+            async with http.get(api, params=params, proxy=self._proxy()) as resp:
                 if resp.status != 200:
                     return None
                 data = await resp.json(content_type=None)
@@ -312,7 +320,7 @@ class SteamApi:
                 "l": "schinese",
                 "cc": "cn",
             }
-            async with http.get(api, params=params) as resp:
+            async with http.get(api, params=params, proxy=self._proxy()) as resp:
                 if resp.status != 200:
                     return ""
                 data = await resp.json(content_type=None)
@@ -335,7 +343,7 @@ class SteamApi:
                 "l": "schinese",
                 "cc": "cn",
             }
-            async with http.get(api, params=params) as resp:
+            async with http.get(api, params=params, proxy=self._proxy()) as resp:
                 if resp.status != 200:
                     return None
                 data = await resp.json(content_type=None)
@@ -359,8 +367,12 @@ class SteamApi:
             if is_free:
                 price_text = "免费开玩"
             elif isinstance(price_overview, dict):
-                final_formatted = str(price_overview.get("final_formatted") or "").strip()
-                initial_formatted = str(price_overview.get("initial_formatted") or "").strip()
+                final_formatted = str(
+                    price_overview.get("final_formatted") or ""
+                ).strip()
+                initial_formatted = str(
+                    price_overview.get("initial_formatted") or ""
+                ).strip()
                 price_final_cents = int(price_overview.get("final") or 0)
                 discount_percent = int(price_overview.get("discount_percent") or 0)
                 if final_formatted:
@@ -406,6 +418,7 @@ class SteamApi:
             async with http.get(
                 "https://api.isthereanydeal.com/games/lookup/v1",
                 params=params,
+                proxy=self._proxy(),
             ) as resp:
                 if resp.status != 200:
                     body = await resp.text(errors="ignore")
@@ -437,6 +450,7 @@ class SteamApi:
             async with http.get(
                 "https://api.isthereanydeal.com/games/search/v1",
                 params=params,
+                proxy=self._proxy(),
             ) as resp:
                 if resp.status != 200:
                     body = await resp.text(errors="ignore")
@@ -478,6 +492,7 @@ class SteamApi:
             async with http.get(
                 "https://api.isthereanydeal.com/games/history/v2",
                 params=params,
+                proxy=self._proxy(),
             ) as resp:
                 if resp.status != 200:
                     body = await resp.text(errors="ignore")
@@ -503,6 +518,8 @@ class SteamApi:
                     continue
 
                 amount_raw = price.get("amount")
+                if amount_raw is None:
+                    continue
                 try:
                     amount = float(amount_raw)
                 except Exception:
@@ -566,7 +583,7 @@ class SteamApi:
                 "maxlength": 300,
                 "format": "json",
             }
-            async with http.get(api, params=params) as resp:
+            async with http.get(api, params=params, proxy=self._proxy()) as resp:
                 if resp.status != 200:
                     return None
                 data = await resp.json(content_type=None)
@@ -587,7 +604,7 @@ class SteamApi:
             try:
                 api = f"https://www.steamgriddb.com/api/v2/grids/steam/{appid}"
                 headers = {"Authorization": f"Bearer {self.steamgriddb_api_key}"}
-                async with http.get(api, headers=headers) as resp:
+                async with http.get(api, headers=headers, proxy=self._proxy()) as resp:
                     if resp.status == 200:
                         data = await resp.json(content_type=None)
                         arr = (data or {}).get("data") or []
@@ -627,7 +644,7 @@ class SteamApi:
 
         for api in candidate_apis:
             try:
-                async with http.get(api, headers=headers) as resp:
+                async with http.get(api, headers=headers, proxy=self._proxy()) as resp:
                     if resp.status != 200:
                         continue
                     payload = await resp.json(content_type=None)
@@ -671,7 +688,7 @@ class SteamApi:
         if not url or not http or Image is None:
             return None
         try:
-            async with http.get(url) as resp:
+            async with http.get(url, proxy=self._proxy()) as resp:
                 if resp.status != 200:
                     return None
                 data = await resp.read()
