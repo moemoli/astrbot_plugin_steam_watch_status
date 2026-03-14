@@ -45,6 +45,9 @@ class SteamWatch(Star):
         self.steamgriddb_api_key = str(
             (self.config or {}).get("steamgriddb_api_key", "")
         ).strip()
+        self.isthereanydeal_api_key = str(
+            (self.config or {}).get("isthereanydeal_api_key", "")
+        ).strip()
         self.llm_provider_id = str(
             (self.config or {}).get("llm_provider_id", "")
         ).strip()
@@ -64,7 +67,11 @@ class SteamWatch(Star):
             Path(get_astrbot_plugin_data_path()) / "astrbot_steam_watch_status",
             cards_dir=temp_cards_dir,
         )
-        self._api = SteamApi(self.steam_web_api_key, self.steamgriddb_api_key)
+        self._api = SteamApi(
+            self.steam_web_api_key,
+            self.steamgriddb_api_key,
+            self.isthereanydeal_api_key,
+        )
         self._renderer = SteamRenderer(self._store.cards_dir())
 
         self._lock = asyncio.Lock()
@@ -284,6 +291,12 @@ class SteamWatch(Star):
     async def subscribe_test(self, event: AstrMessageEvent, game: str | None = None):
         await self._handle_subscribe_test(event, str(game or "").strip())
 
+    @steam.command("价格", alias={"price", "price1y"})
+    async def price_query(self, event: AstrMessageEvent, game: str | None = None):
+        msg = await self._handle_price_query(event, str(game or "").strip())
+        if msg:
+            yield event.plain_result(msg)
+
     @steam.command("列表", alias={"list", "ls"})
     async def list_status(self, event: AstrMessageEvent):
         await self._handle_list_status(event)
@@ -321,9 +334,7 @@ class SteamWatch(Star):
         description = str((app or {}).get("short_description") or "").strip()
         publisher = str((app or {}).get("publishers") or "").strip()
         release_date = str((app or {}).get("release_date") or "").strip()
-        store_url = str(
-            (app or {}).get("url") or f"https://store.steampowered.com/app/{appid}/"
-        )
+        price_text = str((app or {}).get("price_text") or "未知").strip() or "未知"
 
         author_text = publisher or "Steam Store"
         body = description or "点击链接查看完整游戏详情。"
@@ -337,12 +348,13 @@ class SteamWatch(Star):
             author=author_text,
             date_ts=0,
             contents=body,
+            price_text=price_text,
         )
 
-        chain = MessageChain().message(f"[Steam商店] {game_name}\n{store_url}")
         if card:
-            chain.file_image(card)
-        await self.context.send_message(event.unified_msg_origin, chain)
+            await self.context.send_message(
+                event.unified_msg_origin, MessageChain().file_image(card)
+            )
 
     @classmethod
     def _extract_steam_store_appids(cls, text: str) -> list[int]:
@@ -366,6 +378,7 @@ class SteamWatch(Star):
             "/steam bind [好友码/64位id/好友链接/资料链接] [可选:qq]\n"
             "/steam unbind [steamid64|all]\n"
             "/steam 订阅 [游戏链接/游戏id/游戏名称]\n"
+            "/steam 价格 [appid|游戏链接|游戏名称]\n"
             "/steam list\n"
             "/steam me\n"
         )
@@ -383,6 +396,7 @@ class SteamWatch(Star):
             f"- svg_runtime: {diag.get('svg_runtime', 'unknown')}",
             f"- steam_web_api_key: {'set' if self.steam_web_api_key else 'missing'}",
             f"- steamgriddb_api_key: {'set' if self.steamgriddb_api_key else 'missing'}",
+            f"- isthereanydeal_api_key: {'set' if self.isthereanydeal_api_key else 'missing'}",
         ]
         if diag.get("svg_runtime") != "ok":
             lines.append("提示：请确认运行环境已安装 CairoSVG，并重启 AstrBot。")
@@ -572,6 +586,7 @@ class SteamWatch(Star):
         group_id = event.get_group_id()
         now = int(time.time())
         latest_gid = await self._fetch_latest_news_gid(app["appid"])
+        brief = await self._fetch_app_brief(int(app["appid"]))
 
         rec = {
             "id": uuid.uuid4().hex,
@@ -582,6 +597,10 @@ class SteamWatch(Star):
             "game_name": app["name"],
             "store_url": app["url"],
             "last_news_gid": latest_gid,
+            "last_price_text": str((brief or {}).get("price_text") or "未知"),
+            "last_price_cents": int((brief or {}).get("price_final_cents") or -1),
+            "last_discount_percent": int((brief or {}).get("discount_percent") or 0),
+            "last_is_free": bool((brief or {}).get("is_free")),
             "created_ts": now,
         }
 
@@ -596,7 +615,7 @@ class SteamWatch(Star):
             self._game_subscriptions.append(rec)
             await self._save_state_unlocked()
 
-        return f"订阅成功：{rec['game_name']} (AppID: {rec['appid']})\n后续该游戏有新更新公告时会在本群推送。"
+        return f"订阅成功：{rec['game_name']} (AppID: {rec['appid']})\n后续该游戏有新更新公告或特卖降价时会在本群推送。"
 
     async def _handle_subscribe_test(
         self, event: AstrMessageEvent, raw_game: str
@@ -640,6 +659,57 @@ class SteamWatch(Star):
         await self.context.send_message(event.unified_msg_origin, chain)
 
         return f"测试完成：已拉取并推送 {game_name} 的最新新闻。"
+
+    async def _handle_price_query(self, event: AstrMessageEvent, raw_game: str) -> str:
+        if not raw_game:
+            return "用法：/steam 价格 [appid|游戏链接|游戏名称]"
+        if not self.isthereanydeal_api_key:
+            return "未配置 IsThereAnyDeal API Key，请先在插件配置中填写 isthereanydeal_api_key。"
+
+        await self._ensure_http_client()
+
+        app = await self._resolve_app(raw_game)
+        appid = int((app or {}).get("appid") or 0)
+        fallback_name = str((app or {}).get("name") or raw_game).strip()
+
+        itad_game = None
+        if appid > 0:
+            itad_game = await self._itad_lookup_game(appid=appid)
+        if itad_game is None:
+            itad_game = await self._itad_lookup_game(title=fallback_name)
+        if itad_game is None:
+            candidates = await self._itad_search_game(fallback_name)
+            if candidates:
+                itad_game = candidates[0]
+
+        if not isinstance(itad_game, dict):
+            return "未在 IsThereAnyDeal 找到该游戏，请尝试使用更精确的名称或 Steam AppID。"
+
+        game_id = str(itad_game.get("id") or "").strip()
+        if not game_id:
+            return "查询失败：IsThereAnyDeal 返回的游戏 ID 无效。"
+
+        game_name = str(itad_game.get("title") or fallback_name or f"App {appid}")
+        history = await self._itad_fetch_year_history(game_id=game_id, country="CN")
+        if not isinstance(history, dict):
+            return "查询失败：未获取到一年价格历史。"
+
+        points = history.get("points")
+        if not isinstance(points, list) or not points:
+            return "一年内暂无可用价格历史数据。"
+
+        card = await self._render_itad_price_history_card(
+            game_name=game_name,
+            appid=appid,
+            game_id=game_id,
+            currency=str(history.get("currency") or ""),
+            points=points,
+        )
+        if not card:
+            return "价格图生成失败，请稍后重试。"
+
+        await self.context.send_message(event.unified_msg_origin, MessageChain().file_image(card))
+        return ""
 
     async def _handle_me_status(self, event: AstrMessageEvent) -> str:
         if not event.get_group_id():
@@ -1377,11 +1447,11 @@ class SteamWatch(Star):
             latest = await self._fetch_latest_news(appid)
             if not latest:
                 updates[sid] = s
-                continue
+            app_brief = await self._fetch_app_brief(appid)
 
             old_gid = str(s.get("last_news_gid") or "")
-            new_gid = str(latest.get("gid") or "")
-            if old_gid and new_gid and old_gid != new_gid:
+            new_gid = str((latest or {}).get("gid") or "")
+            if latest and old_gid and new_gid and old_gid != new_gid:
                 title = str(latest.get("title") or "新公告")
                 url = str(latest.get("url") or "")
                 game_name = str(s.get("game_name") or f"App {appid}")
@@ -1406,6 +1476,49 @@ class SteamWatch(Star):
                 await self.context.send_message(str(s.get("session") or ""), chain)
                 pushed_news += 1
 
+            if app_brief:
+                sale_reason = self._build_sale_reason(
+                    old_price_cents=int(s.get("last_price_cents") or -1),
+                    old_discount_percent=int(s.get("last_discount_percent") or 0),
+                    old_is_free=bool(s.get("last_is_free")),
+                    new_price_cents=int(app_brief.get("price_final_cents") or -1),
+                    new_discount_percent=int(app_brief.get("discount_percent") or 0),
+                    new_is_free=bool(app_brief.get("is_free")),
+                )
+                if sale_reason:
+                    game_name = str(s.get("game_name") or app_brief.get("name") or f"App {appid}")
+                    store_url = str(s.get("store_url") or app_brief.get("url") or f"https://store.steampowered.com/app/{appid}/")
+                    price_text = str(app_brief.get("price_text") or "未知")
+                    publisher = str(app_brief.get("publishers") or "Steam Store")
+                    release_date = str(app_brief.get("release_date") or "").strip()
+                    desc = str(app_brief.get("short_description") or "").strip() or "点击链接查看完整游戏详情。"
+                    body = f"{sale_reason}\n当前价格：{price_text}\n{store_url}"
+                    if release_date:
+                        body = f"发售日期：{release_date}\n{body}"
+                    if desc:
+                        body = f"{body}\n{desc}"
+
+                    sale_card = await self._render_news_card(
+                        appid=appid,
+                        game_name=game_name,
+                        title="Steam 特卖/低价提醒",
+                        author=publisher or "Steam Store",
+                        date_ts=int(time.time()),
+                        contents=body,
+                        price_text=price_text,
+                    )
+                    if sale_card:
+                        await self.context.send_message(
+                            str(s.get("session") or ""),
+                            MessageChain().file_image(sale_card),
+                        )
+                        pushed_news += 1
+
+                s["last_price_text"] = str(app_brief.get("price_text") or "未知")
+                s["last_price_cents"] = int(app_brief.get("price_final_cents") or -1)
+                s["last_discount_percent"] = int(app_brief.get("discount_percent") or 0)
+                s["last_is_free"] = bool(app_brief.get("is_free"))
+
             s["last_news_gid"] = new_gid or old_gid
             updates[sid] = s
 
@@ -1418,6 +1531,26 @@ class SteamWatch(Star):
                 ]
                 await self._save_state_unlocked()
         return {"subscriptions": len(subs), "pushed_news": pushed_news}
+
+    @staticmethod
+    def _build_sale_reason(
+        *,
+        old_price_cents: int,
+        old_discount_percent: int,
+        old_is_free: bool,
+        new_price_cents: int,
+        new_discount_percent: int,
+        new_is_free: bool,
+    ) -> str:
+        if not old_is_free and new_is_free:
+            return "现已变为免费开玩"
+        if old_discount_percent <= 0 and new_discount_percent > 0:
+            return f"限时折扣开启（-{new_discount_percent}%）"
+        if old_discount_percent > 0 and new_discount_percent > old_discount_percent:
+            return f"折扣加深（-{old_discount_percent}% → -{new_discount_percent}%）"
+        if old_price_cents > 0 and new_price_cents > 0 and new_price_cents < old_price_cents:
+            return "价格下降"
+        return ""
 
     async def _resolve_steamid64(self, raw: str) -> str | None:
         return await self._api.resolve_steamid64(raw)
@@ -1449,6 +1582,15 @@ class SteamWatch(Star):
     async def _fetch_app_brief(self, appid: int) -> dict | None:
         return await self._api.fetch_app_brief(appid)
 
+    async def _itad_lookup_game(self, *, appid: int = 0, title: str = "") -> dict | None:
+        return await self._api.itad_lookup_game(appid=appid, title=title)
+
+    async def _itad_search_game(self, title: str) -> list[dict]:
+        return await self._api.itad_search_game(title)
+
+    async def _itad_fetch_year_history(self, *, game_id: str, country: str = "CN") -> dict | None:
+        return await self._api.itad_fetch_year_history(game_id=game_id, country=country)
+
     async def _render_batch_status_card(self, entries: list[dict]) -> str | None:
         return await self._renderer.render_batch_status_card(entries)
 
@@ -1461,6 +1603,7 @@ class SteamWatch(Star):
         author: str,
         date_ts: int,
         contents: str,
+        price_text: str | None = None,
     ) -> str | None:
         cover = await self._fetch_cover_image(appid)
         return await self._renderer.render_news_card(
@@ -1470,7 +1613,25 @@ class SteamWatch(Star):
             author=author,
             date_ts=date_ts,
             contents=contents,
+            price_text=price_text,
             cover=cover,
+        )
+
+    async def _render_itad_price_history_card(
+        self,
+        *,
+        game_name: str,
+        appid: int,
+        game_id: str,
+        currency: str,
+        points: list[dict],
+    ) -> str | None:
+        return await self._renderer.render_itad_price_history_card(
+            game_name=game_name,
+            appid=appid,
+            game_id=game_id,
+            currency=currency,
+            points=points,
         )
 
     async def _fetch_cover_image(self, appid: int):

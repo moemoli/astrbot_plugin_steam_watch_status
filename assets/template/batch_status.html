@@ -141,8 +141,7 @@
           {% endif %}
         </div>
         <div class="content">
-          <div class="line1">{{ item.steam_name }}</div>
-          <div class="line2">群昵称：{{ item.group_nickname }}</div>
+          <div class="line1">{{ item.steam_name }} ({{ item.group_nickname }})</div>
           <div class="line3">{{ item.status_desc }}</div>
           {% if item.game_name %}<div class="line4">游戏：{{ item.game_name }}</div>{% endif %}
           {% if item.playtime_text %}<div class="line5">本次游戏时长: {{ item.playtime_text }}</div>{% endif %}

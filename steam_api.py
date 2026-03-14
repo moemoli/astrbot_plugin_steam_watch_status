@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import re
+from datetime import datetime, timedelta, timezone
 
 import aiohttp
 
@@ -18,9 +19,15 @@ STEAM_ID64_BASE = 76561197960265728
 
 
 class SteamApi:
-    def __init__(self, steam_web_api_key: str, steamgriddb_api_key: str):
+    def __init__(
+        self,
+        steam_web_api_key: str,
+        steamgriddb_api_key: str,
+        isthereanydeal_api_key: str = "",
+    ):
         self.steam_web_api_key = (steam_web_api_key or "").strip()
         self.steamgriddb_api_key = (steamgriddb_api_key or "").strip()
+        self.isthereanydeal_api_key = (isthereanydeal_api_key or "").strip()
         self.http: aiohttp.ClientSession | None = None
 
     def _http(self) -> aiohttp.ClientSession | None:
@@ -344,6 +351,23 @@ class SteamApi:
             publishers = inner.get("publishers") or []
             release = inner.get("release_date") or {}
             release_date = str(release.get("date") or "").strip()
+            is_free = bool(inner.get("is_free"))
+            price_overview = inner.get("price_overview") or {}
+            price_text = "未知"
+            price_final_cents = -1
+            discount_percent = 0
+            if is_free:
+                price_text = "免费开玩"
+            elif isinstance(price_overview, dict):
+                final_formatted = str(price_overview.get("final_formatted") or "").strip()
+                initial_formatted = str(price_overview.get("initial_formatted") or "").strip()
+                price_final_cents = int(price_overview.get("final") or 0)
+                discount_percent = int(price_overview.get("discount_percent") or 0)
+                if final_formatted:
+                    if discount_percent > 0 and initial_formatted:
+                        price_text = f"{final_formatted}（-{discount_percent}%）"
+                    else:
+                        price_text = final_formatted
 
             dev_text = "、".join(str(x).strip() for x in developers if str(x).strip())
             pub_text = "、".join(str(x).strip() for x in publishers if str(x).strip())
@@ -355,10 +379,172 @@ class SteamApi:
                 "developers": dev_text,
                 "publishers": pub_text,
                 "release_date": release_date,
+                "price_text": price_text,
+                "price_final_cents": price_final_cents,
+                "discount_percent": discount_percent,
+                "is_free": is_free,
                 "url": f"https://store.steampowered.com/app/{appid}/",
             }
         except Exception:
             return None
+
+    async def itad_lookup_game(self, *, appid: int = 0, title: str = "") -> dict | None:
+        http = self._http()
+        if not self.isthereanydeal_api_key or not http:
+            return None
+        params: dict[str, str | int] = {
+            **self._itad_auth_params(),
+        }
+        if appid > 0:
+            params["appid"] = int(appid)
+        elif title:
+            params["title"] = str(title)
+        else:
+            return None
+
+        try:
+            headers = self._itad_headers()
+            async with http.get(
+                "https://api.isthereanydeal.com/games/lookup/v1",
+                params=params,
+                headers=headers,
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json(content_type=None)
+            if not isinstance(data, dict):
+                return None
+            if not bool(data.get("found")):
+                return None
+            game = data.get("game")
+            return dict(game) if isinstance(game, dict) else None
+        except Exception:
+            return None
+
+    async def itad_search_game(self, title: str, *, limit: int = 10) -> list[dict]:
+        http = self._http()
+        text = str(title or "").strip()
+        if not self.isthereanydeal_api_key or not http or not text:
+            return []
+        try:
+            headers = self._itad_headers()
+            params = {
+                "title": text,
+                "results": max(1, min(100, int(limit))),
+                **self._itad_auth_params(),
+            }
+            async with http.get(
+                "https://api.isthereanydeal.com/games/search/v1",
+                params=params,
+                headers=headers,
+            ) as resp:
+                if resp.status != 200:
+                    return []
+                data = await resp.json(content_type=None)
+            if not isinstance(data, list):
+                return []
+            return [dict(x) for x in data if isinstance(x, dict)]
+        except Exception:
+            return []
+
+    async def itad_fetch_year_history(
+        self,
+        *,
+        game_id: str,
+        country: str = "CN",
+        steam_only: bool = True,
+    ) -> dict | None:
+        http = self._http()
+        gid = str(game_id or "").strip()
+        if not self.isthereanydeal_api_key or not http or not gid:
+            return None
+
+        since = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
+        try:
+            headers = self._itad_headers()
+            params = {
+                "id": gid,
+                "country": str(country or "CN").upper(),
+                "since": since,
+                **self._itad_auth_params(),
+            }
+            if steam_only:
+                params["shops"] = "61"
+            async with http.get(
+                "https://api.isthereanydeal.com/games/history/v2",
+                params=params,
+                headers=headers,
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                rows = await resp.json(content_type=None)
+
+            if not isinstance(rows, list):
+                return None
+
+            points: list[dict[str, object]] = []
+            currency = ""
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                deal = row.get("deal")
+                if not isinstance(deal, dict):
+                    continue
+                price = deal.get("price")
+                if not isinstance(price, dict):
+                    continue
+
+                amount_raw = price.get("amount")
+                try:
+                    amount = float(amount_raw)
+                except Exception:
+                    continue
+
+                timestamp = str(row.get("timestamp") or "").strip()
+                if not timestamp:
+                    continue
+
+                shop = row.get("shop")
+                shop_name = ""
+                if isinstance(shop, dict):
+                    shop_name = str(shop.get("name") or shop.get("title") or "").strip()
+
+                cur = str(price.get("currency") or "").strip()
+                if cur and not currency:
+                    currency = cur
+
+                points.append(
+                    {
+                        "timestamp": timestamp,
+                        "amount": amount,
+                        "shop": shop_name,
+                        "cut": int(deal.get("cut") or 0),
+                    }
+                )
+
+            points.sort(key=lambda x: str(x.get("timestamp") or ""))
+            return {
+                "game_id": gid,
+                "currency": currency,
+                "points": points,
+            }
+        except Exception:
+            return None
+
+    def _itad_auth_params(self) -> dict[str, str]:
+        key = str(self.isthereanydeal_api_key or "").strip()
+        if not key:
+            return {}
+        return {"key": key}
+
+    def _itad_headers(self) -> dict[str, str]:
+        key = str(self.isthereanydeal_api_key or "").strip()
+        if not key:
+            return {}
+        return {
+            "Authorization": f"Bearer {key}",
+            "X-Api-Key": key,
+        }
 
     async def fetch_latest_news_gid(self, appid: int) -> str:
         latest = await self.fetch_latest_news(appid)

@@ -10,6 +10,7 @@ import shutil
 import sys
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -365,6 +366,7 @@ def _build_news_html(
     author: str,
     date_ts: int,
     contents: str,
+    price_text: str | None,
     cover,
 ) -> str:
     cover_uri = _image_to_data_uri(cover, filename=f"{appid}.png")
@@ -379,20 +381,141 @@ def _build_news_html(
         if cover_uri
         else '<div class="empty">No Cover</div>'
     )
-    return _render_template(
-        "news.html",
+    values: dict[str, object] = {
+        "cover_html": Markup(cover_html),
+        "appid": _escape_text(appid),
+        "game_name": _escape_text(game_name or f"App {appid}"),
+        "title": _escape_text(title or "新公告"),
+        "author": _escape_text(author or "Steam"),
+        "date_text": _escape_text(date_text),
+        "contents_html": Markup(
+            _multiline_to_html(contents or "请点击链接查看完整公告内容。")
+        ),
+        "generated_at": _escape_text(
+            time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        ),
+    }
+    if price_text is not None:
+        values["price_text"] = _escape_text(price_text)
+    return _render_template("news.html", values)
+
+
+def _parse_iso_to_ts(value: object) -> int:
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return int(dt.timestamp())
+    except Exception:
+        return 0
+
+
+def _build_itad_price_history_html(
+    *,
+    game_name: str,
+    appid: int,
+    game_id: str,
+    currency: str,
+    points: list[dict],
+) -> str:
+    norm_points: list[dict[str, object]] = []
+    for row in points:
+        if not isinstance(row, dict):
+            continue
+        amount_raw = row.get("amount")
+        try:
+            amount = float(amount_raw)
+        except Exception:
+            continue
+        timestamp = _parse_iso_to_ts(row.get("timestamp"))
+        if timestamp <= 0:
+            continue
+        norm_points.append(
+            {
+                "ts": timestamp,
+                "amount": amount,
+                "shop": str(row.get("shop") or "").strip(),
+                "cut": int(row.get("cut") or 0),
+            }
+        )
+
+    if not norm_points:
+        return _render_template(
+            "itad_price_history.html",
+            {
+                "game_name": _escape_text(game_name or "Unknown Game"),
+                "appid": _escape_text(appid or "-"),
+                "game_id": _escape_text(game_id or "-"),
+                "currency": _escape_text(currency or ""),
+                "point_count": 0,
+                "latest_price": "-",
+                "lowest_price": "-",
+                "highest_price": "-",
+                "start_date": "-",
+                "end_date": "-",
+                "chart_points": "",
+                "chart_polyline": "",
+                "y_ticks": [],
+                "rows": [],
+                "generated_at": _escape_text(
+                    time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+                ),
+            },
+        )
+
+    norm_points.sort(key=lambda x: int(x["ts"]))
+    values = [float(x["amount"]) for x in norm_points]
+    min_v = min(values)
+    max_v = max(values)
+    rng = max(max_v - min_v, 1e-6)
+
+    chart_w = 820.0
+    chart_h = 280.0
+    n = len(norm_points)
+    chart_points: list[dict[str, object]] = []
+    for i, row in enumerate(norm_points):
+        x = 0.0 if n == 1 else (chart_w * i / (n - 1))
+        y = chart_h * (1.0 - ((float(row["amount"]) - min_v) / rng))
+        chart_points.append({"x": round(x, 2), "y": round(y, 2), "amount": row["amount"], "ts": row["ts"]})
+
+    polyline = " ".join(f"{p['x']},{p['y']}" for p in chart_points)
+    y_ticks = [round(max_v - (rng * i / 4), 2) for i in range(5)]
+
+    latest = norm_points[-1]
+    latest_price = float(latest["amount"])
+    rows = list(reversed(norm_points[-8:]))
+    row_items = [
         {
-            "cover_html": Markup(cover_html),
-            "appid": _escape_text(appid),
-            "game_name": _escape_text(game_name or f"App {appid}"),
-            "title": _escape_text(title or "新公告"),
-            "author": _escape_text(author or "Steam"),
-            "date_text": _escape_text(date_text),
-            "contents_html": Markup(
-                _multiline_to_html(
-                contents or "请点击链接查看完整公告内容。"
-                )
+            "date": time.strftime("%Y-%m-%d", time.localtime(int(r["ts"]))),
+            "price": f"{float(r['amount']):.2f}",
+            "shop": str(r.get("shop") or "-") or "-",
+            "cut": int(r.get("cut") or 0),
+        }
+        for r in rows
+    ]
+
+    return _render_template(
+        "itad_price_history.html",
+        {
+            "game_name": _escape_text(game_name or "Unknown Game"),
+            "appid": _escape_text(appid or "-"),
+            "game_id": _escape_text(game_id or "-"),
+            "currency": _escape_text(currency or ""),
+            "point_count": n,
+            "latest_price": f"{latest_price:.2f}",
+            "lowest_price": f"{min_v:.2f}",
+            "highest_price": f"{max_v:.2f}",
+            "start_date": _escape_text(
+                time.strftime("%Y-%m-%d", time.localtime(int(norm_points[0]["ts"])))
             ),
+            "end_date": _escape_text(
+                time.strftime("%Y-%m-%d", time.localtime(int(norm_points[-1]["ts"])))
+            ),
+            "chart_points": chart_points,
+            "chart_polyline": polyline,
+            "y_ticks": y_ticks,
+            "rows": row_items,
             "generated_at": _escape_text(
                 time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
             ),
@@ -561,6 +684,7 @@ class SteamRenderer:
         author: str,
         date_ts: int,
         contents: str,
+        price_text: str | None = None,
         cover,
     ) -> str | None:
         html_text = _build_news_html(
@@ -570,6 +694,7 @@ class SteamRenderer:
             author=author,
             date_ts=date_ts,
             contents=contents,
+            price_text=price_text,
             cover=cover,
         )
         return await _render_html_to_png_file(
@@ -577,4 +702,27 @@ class SteamRenderer:
             width=980,
             prefix="steam_news",
             min_height=560,
+        )
+
+    async def render_itad_price_history_card(
+        self,
+        *,
+        game_name: str,
+        appid: int,
+        game_id: str,
+        currency: str,
+        points: list[dict],
+    ) -> str | None:
+        html_text = _build_itad_price_history_html(
+            game_name=game_name,
+            appid=appid,
+            game_id=game_id,
+            currency=currency,
+            points=points,
+        )
+        return await _render_html_to_png_file(
+            html_text=html_text,
+            width=1080,
+            prefix="steam_itad_price",
+            min_height=720,
         )

@@ -13,6 +13,7 @@
       - game_name: str，展示游戏名。
       - title: str，新闻标题。
       - author: str，作者/来源。
+      - price_text: str，价格文本（例如 ¥88 / 免费开玩 / 未知）。
       - date_text: str，格式化后的发布时间。
       - contents_html: Markup，正文富文本（换行已处理）。
       - generated_at: str，渲染时间戳。
@@ -79,6 +80,7 @@
     .news { background: rgba(30,41,59,0.78); border:1px solid rgba(148,163,184,0.2); border-radius: 12px; padding: 18px 20px; }
     .meta { color:#93c5fd; font-size:14px; margin-bottom:8px; }
     .game { color:#f8fafc; font-size:30px; font-weight:700; margin-bottom:10px; word-break: break-word; }
+    .price { color:#f8fafc; font-size:24px; font-weight:700; margin-bottom:10px; }
     .news-title { color:#f1f5f9; font-size:24px; font-weight:700; line-height:1.4; margin-bottom:12px; word-break: break-word; }
     .info { color:#94a3b8; font-size:14px; margin-bottom:14px; }
     .desc { color:#cbd5e1; font-size:16px; line-height:1.7; word-break: break-word; }
@@ -97,8 +99,11 @@
     <div class="body-wrap">
       <div class="cover-box">{{ cover_html }}</div>
       <div class="news">
-        <div class="meta">AppID: {{ appid }}</div>
+        <div class="meta">AppID: {{ appid }}　</div>
         <div class="game">{{ game_name }}</div>
+        {% if price_text is defined %}
+        <div class="price">{{ price_text }}</div>
+        {% endif %}
         <div class="news-title">{{ title }}</div>
         <div class="info">作者：{{ author }}　|　时间：{{ date_text }}</div>
         <div class="desc">{{ contents_html }}</div>
