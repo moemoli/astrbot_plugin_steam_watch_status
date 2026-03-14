@@ -403,13 +403,15 @@ class SteamApi:
             return None
 
         try:
-            headers = self._itad_headers()
             async with http.get(
                 "https://api.isthereanydeal.com/games/lookup/v1",
                 params=params,
-                headers=headers,
             ) as resp:
                 if resp.status != 200:
+                    body = await resp.text(errors="ignore")
+                    logger.warning(
+                        f"itad lookup failed: status={resp.status}, body={body[:200]}"
+                    )
                     return None
                 data = await resp.json(content_type=None)
             if not isinstance(data, dict):
@@ -427,7 +429,6 @@ class SteamApi:
         if not self.isthereanydeal_api_key or not http or not text:
             return []
         try:
-            headers = self._itad_headers()
             params = {
                 "title": text,
                 "results": max(1, min(100, int(limit))),
@@ -436,9 +437,12 @@ class SteamApi:
             async with http.get(
                 "https://api.isthereanydeal.com/games/search/v1",
                 params=params,
-                headers=headers,
             ) as resp:
                 if resp.status != 200:
+                    body = await resp.text(errors="ignore")
+                    logger.warning(
+                        f"itad search failed: status={resp.status}, body={body[:200]}"
+                    )
                     return []
                 data = await resp.json(content_type=None)
             if not isinstance(data, list):
@@ -459,9 +463,10 @@ class SteamApi:
         if not self.isthereanydeal_api_key or not http or not gid:
             return None
 
-        since = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
+        since = (datetime.now(timezone.utc) - timedelta(days=365)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
         try:
-            headers = self._itad_headers()
             params = {
                 "id": gid,
                 "country": str(country or "CN").upper(),
@@ -473,9 +478,12 @@ class SteamApi:
             async with http.get(
                 "https://api.isthereanydeal.com/games/history/v2",
                 params=params,
-                headers=headers,
             ) as resp:
                 if resp.status != 200:
+                    body = await resp.text(errors="ignore")
+                    logger.warning(
+                        f"itad history failed: status={resp.status}, body={body[:300]}"
+                    )
                     return None
                 rows = await resp.json(content_type=None)
 
@@ -538,13 +546,7 @@ class SteamApi:
         return {"key": key}
 
     def _itad_headers(self) -> dict[str, str]:
-        key = str(self.isthereanydeal_api_key or "").strip()
-        if not key:
-            return {}
-        return {
-            "Authorization": f"Bearer {key}",
-            "X-Api-Key": key,
-        }
+        return {}
 
     async def fetch_latest_news_gid(self, appid: int) -> str:
         latest = await self.fetch_latest_news(appid)

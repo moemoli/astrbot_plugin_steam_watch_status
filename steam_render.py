@@ -473,9 +473,16 @@ def _build_itad_price_history_html(
     chart_w = 820.0
     chart_h = 280.0
     n = len(norm_points)
+    latest_ts = max(int(norm_points[-1]["ts"]), int(time.time()))
+    window_start_ts = latest_ts - 365 * 24 * 3600
+    ts_range = max(latest_ts - window_start_ts, 1)
+
     chart_points: list[dict[str, object]] = []
-    for i, row in enumerate(norm_points):
-        x = 0.0 if n == 1 else (chart_w * i / (n - 1))
+    for row in norm_points:
+        row_ts = int(row["ts"])
+        x_ratio = (row_ts - window_start_ts) / ts_range
+        x_ratio = min(1.0, max(0.0, x_ratio))
+        x = chart_w * x_ratio
         y = chart_h * (1.0 - ((float(row["amount"]) - min_v) / rng))
         chart_points.append({"x": round(x, 2), "y": round(y, 2), "amount": row["amount"], "ts": row["ts"]})
 
