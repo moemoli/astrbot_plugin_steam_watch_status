@@ -51,6 +51,18 @@
 	- 点评 Prompt 模板
 	- 可用变量：`{display_name}`、`{game_name}`、`{duration_text}`
 
+- `llm_comment_timeout_sec`
+	- 点评请求超时秒数，默认 `15`
+	- 范围 `3~60`，模型响应慢时可适当调高
+
+- `llm_comment_max_attempts`
+	- 点评总尝试次数（含首次请求），默认 `2`
+	- 范围 `1~5`
+
+- `llm_comment_concurrency`
+	- 点评并发上限，默认 `1`
+	- 范围 `1~5`，并发过高可能触发模型限流
+
 ---
 
 ## 指令说明

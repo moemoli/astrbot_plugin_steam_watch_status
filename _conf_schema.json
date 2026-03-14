@@ -47,5 +47,23 @@
         "default": "你是游戏群里的简短播报助手。玩家 {display_name} 刚结束《{game_name}》；{duration_text}。请给一句 8~24 字中文评价，语气自然，不要 emoji，不要引号。",
         "description": "游戏结束评价 Prompt 模板",
         "hint": "可用变量：{display_name} {game_name} {duration_text}。留空将使用内置默认模板。"
+    },
+    "llm_comment_timeout_sec": {
+        "type": "string",
+        "default": "15",
+        "description": "评价请求超时秒数（可选）",
+        "hint": "范围 3~60，默认 15。模型响应慢时可适当调高。"
+    },
+    "llm_comment_max_attempts": {
+        "type": "string",
+        "default": "2",
+        "description": "评价失败重试次数（可选）",
+        "hint": "范围 1~5，默认 2。包含首次请求在内的总尝试次数。"
+    },
+    "llm_comment_concurrency": {
+        "type": "string",
+        "default": "1",
+        "description": "评价并发上限（可选）",
+        "hint": "范围 1~5，默认 1。并发过高可能触发模型限流。"
     }
 }

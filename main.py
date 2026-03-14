@@ -35,6 +35,9 @@ class SteamWatch(Star):
         "玩家 {display_name} 刚结束《{game_name}》；{duration_text}。"
         "请给一句 8~24 字中文评价，语气自然，不要 emoji，不要引号。"
     )
+    _llm_comment_timeout_sec = 15
+    _llm_comment_max_attempts = 2
+    _llm_comment_concurrency = 1
 
     def __init__(self, context: Context, config=None):
         super().__init__(context, config)
@@ -55,6 +58,30 @@ class SteamWatch(Star):
         self.llm_comment_prompt = str(
             (self.config or {}).get("llm_comment_prompt", "")
         ).strip()
+        self._llm_comment_timeout_sec = self._parse_int_in_range(
+            (self.config or {}).get(
+                "llm_comment_timeout_sec", self._llm_comment_timeout_sec
+            ),
+            default=self._llm_comment_timeout_sec,
+            min_value=3,
+            max_value=60,
+        )
+        self._llm_comment_max_attempts = self._parse_int_in_range(
+            (self.config or {}).get(
+                "llm_comment_max_attempts", self._llm_comment_max_attempts
+            ),
+            default=self._llm_comment_max_attempts,
+            min_value=1,
+            max_value=5,
+        )
+        self._llm_comment_concurrency = self._parse_int_in_range(
+            (self.config or {}).get(
+                "llm_comment_concurrency", self._llm_comment_concurrency
+            ),
+            default=self._llm_comment_concurrency,
+            min_value=1,
+            max_value=5,
+        )
         self.verbose_poll_log = self._parse_bool(
             (self.config or {}).get("verbose_poll_log", False)
         )
@@ -77,6 +104,7 @@ class SteamWatch(Star):
         self._renderer = SteamRenderer(self._store.cards_dir())
 
         self._lock = asyncio.Lock()
+        self._llm_comment_lock = asyncio.Semaphore(self._llm_comment_concurrency)
         self._stop = False
         self._poll_task: asyncio.Task | None = None
         self._http: aiohttp.ClientSession | None = None
@@ -402,6 +430,9 @@ class SteamWatch(Star):
             f"- isthereanydeal_api_key: {'set' if self.isthereanydeal_api_key else 'missing'}",
             f"- http_proxy: {'set' if self.http_proxy else 'none'}",
             "- proxy_mode: explicit request proxy param (trust_env=false)",
+            f"- llm_comment_timeout_sec: {self._llm_comment_timeout_sec}",
+            f"- llm_comment_max_attempts: {self._llm_comment_max_attempts}",
+            f"- llm_comment_concurrency: {self._llm_comment_concurrency}",
         ]
         if diag.get("svg_runtime") != "ok":
             lines.append("提示：请确认运行环境已安装 CairoSVG，并重启 AstrBot。")
@@ -1374,8 +1405,6 @@ class SteamWatch(Star):
         game_name: str,
         duration_text: str,
     ) -> str:
-        if not session:
-            return ""
         provider = self._resolve_comment_provider(session)
         if not provider or not isinstance(provider, Provider):
             return ""
@@ -1385,17 +1414,30 @@ class SteamWatch(Star):
             game_name=game_name,
             duration_text=duration_text,
         )
-        try:
-            resp = await asyncio.wait_for(provider.text_chat(prompt=prompt), timeout=15)
-            text = (getattr(resp, "completion_text", "") or "").strip()
-            text = re.sub(r"\s+", " ", text)
-            text = text.replace("\n", " ").strip(" \"'“”‘’")
-            if len(text) > 28:
-                text = text[:28].rstrip("，。,.!?！？") + "。"
-            return text
-        except Exception as exc:
-            logger.debug(f"llm comment generate failed: {exc!s}")
-            return ""
+        async with self._llm_comment_lock:
+            for attempt in range(1, self._llm_comment_max_attempts + 1):
+                try:
+                    resp = await asyncio.wait_for(
+                        provider.text_chat(prompt=prompt),
+                        timeout=self._llm_comment_timeout_sec,
+                    )
+                    text = (getattr(resp, "completion_text", "") or "").strip()
+                    text = re.sub(r"\s+", " ", text)
+                    text = text.replace("\n", " ").strip(" \"'“”‘’")
+                    if len(text) > 28:
+                        text = text[:28].rstrip("，。,.!?！？") + "。"
+                    if text:
+                        return text
+                    logger.debug(
+                        f"llm comment empty response, attempt={attempt}/{self._llm_comment_max_attempts}"
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        f"llm comment generate failed, attempt={attempt}/{self._llm_comment_max_attempts}: {exc!s}"
+                    )
+                if attempt < self._llm_comment_max_attempts:
+                    await asyncio.sleep(0.35 * attempt)
+        return ""
 
     def _resolve_comment_provider(self, session: str):
         if self.llm_provider_id:
@@ -1405,7 +1447,18 @@ class SteamWatch(Star):
                     return provider
             except Exception as exc:
                 logger.debug(f"resolve llm provider by id failed: {exc!s}")
-        return self.context.get_using_provider(umo=session)
+        if session:
+            try:
+                provider = self.context.get_using_provider(umo=session)
+                if provider is not None:
+                    return provider
+            except Exception as exc:
+                logger.debug(f"resolve llm provider by session failed: {exc!s}")
+        try:
+            return self.context.get_using_provider()
+        except Exception as exc:
+            logger.debug(f"resolve default llm provider failed: {exc!s}")
+            return None
 
     def _build_llm_comment_prompt(
         self,
@@ -1690,6 +1743,16 @@ class SteamWatch(Star):
             return raw
         text = str(raw).strip().lower()
         return text in {"1", "true", "yes", "on", "y", "t"}
+
+    @staticmethod
+    def _parse_int_in_range(
+        raw: object, *, default: int, min_value: int, max_value: int
+    ) -> int:
+        try:
+            val = int(str(raw).strip())
+        except Exception:
+            return default
+        return max(min_value, min(max_value, val))
 
     def _poll_log(self, message: str) -> None:
         if self.verbose_poll_log:
