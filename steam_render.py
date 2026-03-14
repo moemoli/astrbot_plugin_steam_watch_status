@@ -355,7 +355,21 @@ def _state_color(state: str) -> str:
 
 
 def _template_dir() -> Path:
-    return Path(__file__).resolve().parent / "assets" / "template"
+    base = Path(__file__).resolve().parent
+    candidates: list[Path] = [
+        base / "assets" / "template",
+        base.parent / "astrbot_plugin_steam_watch_status" / "assets" / "template",
+        base.parent / "astrbot_steam_watch_status" / "assets" / "template",
+    ]
+
+    for path in candidates:
+        try:
+            if path.is_dir() and (path / "batch_status.html").exists():
+                return path
+        except Exception:
+            continue
+
+    return candidates[0]
 
 
 def _get_jinja_env() -> JinjaEnvironment:
