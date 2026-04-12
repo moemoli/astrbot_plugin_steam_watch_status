@@ -157,14 +157,17 @@ class SteamWatch(Star):
     ):
         if not event.get_group_id():
             yield event.plain_result("请在群聊中执行绑定，状态变化会推送到该群。")
+            event.stop_event()
             return
 
         if not self.steam_web_api_key:
             yield event.plain_result("未配置 Steam Web API Key，请先在插件配置中填写。")
+            event.stop_event()
             return
 
         if not steam:
             yield event.plain_result(self._steam_help_text())
+            event.stop_event()
             return
 
         sender_id = str(event.get_sender_id() or "").strip()
@@ -180,12 +183,14 @@ class SteamWatch(Star):
                 yield event.plain_result(
                     "绑定失败：QQ 参数格式错误，请输入纯数字 QQ 号。"
                 )
+                event.stop_event()
                 return
             qq_target = qq_match.group(1)
 
         bind_sender_id = qq_target or sender_id
         if not bind_sender_id:
             yield event.plain_result("绑定失败：无法识别发送者 QQ。")
+            event.stop_event()
             return
 
         await self._ensure_http_client()
@@ -193,6 +198,7 @@ class SteamWatch(Star):
         steamid64 = await self._resolve_steamid64(str(steam).strip())
         if not steamid64:
             yield event.plain_result("绑定失败：无法识别该 Steam 标识。")
+            event.stop_event()
             return
 
         player = await self._fetch_player_summary(steamid64)
@@ -222,6 +228,7 @@ class SteamWatch(Star):
                     yield event.plain_result(
                         f"绑定失败：Steam 账号 {steam_name} 已被本群其他成员绑定。"
                     )
+                    event.stop_event()
                     return
 
             existing = None
@@ -281,15 +288,18 @@ class SteamWatch(Star):
                 f"绑定对象：QQ {qq_target}\n"
                 "后续状态变化将推送到当前群。"
             )
+            event.stop_event()
             return
         yield event.plain_result(
             f"绑定成功：Steam {steam_name} ({steamid64})\n后续状态变化将推送到当前群。"
         )
+        event.stop_event()
 
     @steam.command("解绑", alias={"unbind"})
     async def unbind(self, event: AstrMessageEvent, target: str | None = None):
         msg = await self._handle_unbind(event, target)
         yield event.plain_result(msg)
+        event.stop_event()
 
     @steam.command("状态测试", alias={"status", "statustest"})
     async def status_test(self, event: AstrMessageEvent, target: str | None = None):
@@ -299,6 +309,7 @@ class SteamWatch(Star):
     async def subscribe(self, event: AstrMessageEvent, game: str | None = None):
         msg = await self._handle_subscribe_game(event, str(game or "").strip())
         yield event.plain_result(msg)
+        event.stop_event()
 
     @steam.command("订阅测试", alias={"subtest", "testsub"})
     async def subscribe_test(self, event: AstrMessageEvent, game: str | None = None):
@@ -309,6 +320,7 @@ class SteamWatch(Star):
         msg = await self._handle_price_query(event, str(game or "").strip())
         if msg:
             yield event.plain_result(msg)
+            event.stop_event()
 
     @steam.command("列表", alias={"list", "ls"})
     async def list_status(self, event: AstrMessageEvent):
@@ -323,10 +335,12 @@ class SteamWatch(Star):
     async def self_check(self, event: AstrMessageEvent):
         msg = self._handle_self_check()
         yield event.plain_result(msg)
+        event.stop_event()
 
     @steam.command("帮助", alias={"help", "h"})
     async def help(self, event: AstrMessageEvent):
         yield event.plain_result(self._steam_help_text())
+        event.stop_event()
 
     @filter.regex(r"https?://store\.steampowered\.com/app/\d+")
     async def group_steam_store_link_preview(self, event: AstrMessageEvent):
