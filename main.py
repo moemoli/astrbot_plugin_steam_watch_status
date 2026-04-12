@@ -46,6 +46,9 @@ class SteamWatch(Star):
         ).strip()
         self.http_proxy = str(config.get("http_proxy", "")).strip()
         self.llm_provider_id = str(config.get("llm_provider_id", "")).strip()
+        self.llm_comment_enabled = self._parse_bool(
+            config.get("llm_comment_enabled", False)
+        )
         self.llm_comment_prompt = str(config.get("llm_comment_prompt", "")).strip()
         self._llm_comment_timeout_sec = self._parse_int_in_range(
             config.get("llm_comment_timeout_sec", self._llm_comment_timeout_sec),
@@ -428,6 +431,7 @@ class SteamWatch(Star):
             f"- isthereanydeal_api_key: {'set' if self.isthereanydeal_api_key else 'missing'}",
             f"- http_proxy: {'set' if self.http_proxy else 'none'}",
             "- proxy_mode: explicit request proxy param (trust_env=false)",
+            f"- llm_comment_enabled: {self.llm_comment_enabled}",
             f"- llm_comment_timeout_sec: {self._llm_comment_timeout_sec}",
             f"- llm_comment_max_attempts: {self._llm_comment_max_attempts}",
             f"- llm_comment_concurrency: {self._llm_comment_concurrency}",
@@ -1369,12 +1373,13 @@ class SteamWatch(Star):
                 playtime_text = self._format_duration(session_secs)
             else:
                 playtime_text = "未知"
-            comment_text = await self._generate_llm_comment(
-                session=session,
-                display_name=display_name,
-                game_name=game_name or "该游戏",
-                duration_text=playtime_text,
-            )
+            if self.llm_comment_enabled:
+                comment_text = await self._generate_llm_comment(
+                    session=session,
+                    display_name=display_name,
+                    game_name=game_name or "该游戏",
+                    duration_text=playtime_text,
+                )
             status_desc = "游戏结束"
             render_state = "ended"
         else:

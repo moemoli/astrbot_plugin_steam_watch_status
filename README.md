@@ -47,6 +47,10 @@
 - `llm_provider_id`
 	- 结束游戏点评使用的 Provider（留空使用当前默认 Provider）
 
+- `llm_comment_enabled`
+	- 是否启用结束游戏点评，默认 `false`
+	- 仅在开启时才会调用 LLM 生成评价
+
 - `llm_comment_prompt`
 	- 点评 Prompt 模板
 	- 可用变量：`{display_name}`、`{game_name}`、`{duration_text}`

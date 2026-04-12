@@ -42,6 +42,12 @@
         "description": "评价使用的LLM Provider ID（可选）",
         "hint": "留空时使用当前会话默认 Provider；填写后优先使用该 Provider。"
     },
+    "llm_comment_enabled": {
+        "type": "bool",
+        "default": false,
+        "description": "是否启用游戏结束LLM评价",
+        "hint": "关闭时不会调用LLM生成游戏结束评价。"
+    },
     "llm_comment_prompt": {
         "type": "text",
         "default": "你是游戏群里的简短播报助手。玩家 {display_name} 刚结束《{game_name}》；{duration_text}。请给一句 8~24 字中文评价，语气自然，不要 emoji，不要引号。",
