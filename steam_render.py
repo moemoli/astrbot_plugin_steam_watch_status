@@ -402,10 +402,18 @@ class SteamRenderer:
         if not entries or not self._html_render_func:
             return None
         html_text = _build_batch_status_html(entries)
+        # 裁剪到卡片主体区域，避免远程渲染默认画布过大导致上下左右留白。
+        clip_height = max(420, 240 + len(entries) * 220)
         options = {
             "full_page": True,
             "type": "png",
             "scale": "device",
+            "clip": {
+                "x": 24,
+                "y": 24,
+                "width": 960,
+                "height": clip_height,
+            },
         }
         try:
             return await self._html_render_func(html_text, options)
