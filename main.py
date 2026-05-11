@@ -1159,6 +1159,11 @@ class SteamWatch(Star):
                     )
                     session_secs = max(0, now_ts - pending_start_ts)
                     b["pending_endgame"] = None
+                elif old_state in {"online", "offline"} and new_state in {
+                    "online",
+                    "offline",
+                }:
+                    emit_change = False
 
                 session = str(b.get("session") or "").strip()
                 if emit_change and session:
